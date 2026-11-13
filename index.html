@@ -6,6 +6,7 @@
     <section id="ap-intro" class="ap-intro">
       <div class="ai-intro-stickers" aria-hidden="true"></div><div class="ap-intro-copy"><h1>나의 AI<br>수업 스타일은?</h1><button id="ap-start" type="button" class="ap-button ap-primary cursor-interaction">내 스타일 알아보기 <span aria-hidden="true">→</span></button></div>
 
+      <p class="ai-creator-credit"><span>Created by</span> <span>Eugene Park</span></p>
     </section>
 <section id="ai-nickname-screen" class="ai-nickname-screen" hidden>
 <form id="ai-nickname-form"><label for="ai-nickname">포토카드에 들어갈 선생님의 닉네임을 입력해 주세요</label>
@@ -2177,6 +2178,14 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 #aibti-prototype.retro-club.ap-tablet-app .ap-intro-copy .ap-button {
   min-width: 250px; min-height: 56px; padding: 14px 22px;
   font-size: 19px; background: #e4d7fa; border-color: #786794;
+}
+#aibti-prototype.retro-club.ap-tablet-app #ap-intro > .ai-creator-credit {
+  position: absolute; z-index: 2; left: 16px; right: 16px; bottom: 20px;
+  margin: 0; padding: 0; color: var(--ap-soft); text-align: center;
+  font-size: 14px; line-height: 1.4; letter-spacing: .04em;
+}
+@media (max-width:479px) {
+  #aibti-prototype.retro-club.ap-tablet-app #ap-intro > .ai-creator-credit > span { display: block; }
 }
 #aibti-prototype.retro-club.ap-tablet-app .ai-intro-stickers {
   position: absolute; inset: 0; z-index: 1; pointer-events: none;

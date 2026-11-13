@@ -1610,19 +1610,140 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
   }
 
   function rcInstallViewport(){
+    if(aiReceiving)return;
     const button=element('button','전체 화면','rc-fullscreen');button.id='rc-fullscreen';button.type='button';button.setAttribute('aria-pressed','false');$('.ap-header').append(button);
     const notice=element('span','','rc-view-notice');notice.id='rc-view-notice';notice.setAttribute('role','status');$('.ap-header').after(notice);notice.hidden=true;
-    let priorOverflow='',focusMode=false;
-    function sync(){const native=document.fullscreenElement===root;button.textContent=native?'전체 화면 종료':focusMode?'화면 집중 종료':'전체 화면';button.setAttribute('aria-pressed',String(native||focusMode));requestAnimationFrame(skUpdateOverlay);}
-    function stopFocus(){focusMode=false;root.classList.remove('rc-focus-mode');document.body.style.overflow=priorOverflow;notice.hidden=true;sync();}
-    button.onclick=async()=>{
-      if(document.fullscreenElement===root){await document.exitFullscreen();return;}
-      if(focusMode){stopFocus();return;}
-      try{if(!document.fullscreenEnabled||!root.requestFullscreen)throw new Error('unsupported');await root.requestFullscreen();notice.hidden=true;}
-      catch{priorOverflow=document.body.style.overflow;focusMode=true;root.classList.add('rc-focus-mode');document.body.style.overflow='hidden';notice.textContent='전체 화면을 지원하지 않아 화면 집중 모드를 사용합니다. 위 버튼으로 종료할 수 있습니다.';notice.hidden=false;}
+    const recovery=element('div',undefined,'ai-fullscreen-recovery');recovery.id='ai-fullscreen-recovery';recovery.hidden=true;
+    const message=element('span');message.id='ai-fullscreen-message';message.setAttribute('role','status');message.setAttribute('aria-live','polite');
+    const returnButton=element('button','전체 화면으로 돌아가기','ap-button ap-secondary');returnButton.id='ai-fullscreen-return';returnButton.type='button';
+    recovery.append(message,returnButton);notice.after(recovery);
+    let focusMode=false,priorOverflow='',intent=false,cycle=null,sequence=0,restoring=false,lastOutcome='idle',settleTimer=0;
+    const native=()=>document.fullscreenElement===root;
+    const focused=()=>focusMode&&root.classList.contains('rc-focus-mode');
+    const available=()=>document.visibilityState!=='hidden'&&document.hasFocus();
+    const recoverable=()=>!!cycle&&cycle.mode!=='none'&&!cycle.cancelled&&intent&&!cycle.restored;
+    function sync(){
+      button.textContent=native()?'전체 화면 종료':focused()?'화면 집중 종료':'전체 화면';button.setAttribute('aria-pressed',String(native()||focused()));
+      returnButton.disabled=restoring;requestAnimationFrame(skUpdateOverlay);
+    }
+    function hideRecovery(){recovery.hidden=true;message.textContent='';}
+    function showRecovery(text='인쇄창을 닫은 뒤 전체 화면이 해제됐어요.'){
+      if(!recoverable())return;
+      message.textContent=text;recovery.hidden=false;sync();
+    }
+    function cancelIntent(){
+      clearTimeout(settleTimer);intent=false;if(cycle){cycle.cancelled=true;cycle.active=false;cycle.awaitingLateExit=false;}lastOutcome='cancelled-by-user';hideRecovery();
+    }
+    function applyFocus(){
+      if(!focusMode)priorOverflow=document.body.style.overflow;
+      focusMode=true;root.classList.add('rc-focus-mode');document.body.style.overflow='hidden';
+      notice.textContent='화면 집중 모드입니다. 브라우저 주소줄은 그대로일 수 있어요.';notice.hidden=false;sync();
+    }
+    function stopFocus(){
+      focusMode=false;root.classList.remove('rc-focus-mode');document.body.style.overflow=priorOverflow;notice.hidden=true;sync();
+    }
+    function restored(current){
+      if(cycle!==current||current.cancelled||!intent)return false;
+      if(current.mode==='native'&&!native()||current.mode==='focus'&&!focused())return false;
+      current.restored=true;current.lost=false;lastOutcome='restored';hideRecovery();sync();return true;
+    }
+    async function requestRestore(current,automatic){
+      if(restoring||cycle!==current||!recoverable())return false;
+      if(current.mode==='focus'){applyFocus();return restored(current);}
+      if(native())return restored(current);
+      if(document.fullscreenElement){cancelIntent();sync();return false;}
+      restoring=true;sync();
+      try{
+        if(!document.fullscreenEnabled||typeof root.requestFullscreen!=='function')throw new Error('unavailable');
+        await root.requestFullscreen();
+        if(current.cancelled||!intent){if(!intent&&native())await document.exitFullscreen().catch(()=>{});return false;}
+        if(restored(current))return true;
+        lastOutcome='request-did-not-enter';showRecovery('전체 화면으로 전환되지 않았어요. 아래 버튼을 눌러 다시 시도해 주세요.');
+      }catch{
+        if(cycle===current&&!current.cancelled&&intent){lastOutcome=automatic?'automatic-denied':'gesture-denied';showRecovery(automatic?'전체 화면을 자동으로 복구하지 못했어요. 아래 버튼을 눌러 주세요.':'전체 화면으로 전환하지 못했어요. 아래 버튼을 눌러 다시 시도해 주세요.');}
+      }finally{restoring=false;sync();}
+      return false;
+    }
+    function maybeRestore(){
+      if(!recoverable()||!cycle.returned||!available())return;
+      const current=cycle;
+      if(current.mode==='native'&&!current.settleArmed){
+        current.settleArmed=true;current.awaitingLateExit=true;
+        // Only disarm the late-event window; this timer never requests fullscreen.
+        settleTimer=setTimeout(()=>{if(cycle===current)current.awaitingLateExit=false;},400);
+      }
+      if(current.mode==='native'&&native()||current.mode==='focus'&&focused()){restored(current);return;}
+      current.lost=true;showRecovery();
+      if(current.attempted)return;
+      current.attempted=true;requestRestore(current,true);
+    }
+    function beforePrint(){
+      if(cycle?.active)return;
+      clearTimeout(settleTimer);
+      const mode=native()?'native':focused()?'focus':'none';
+      cycle={id:++sequence,mode,active:true,returned:false,blurSeen:false,awaySeen:false,attempted:false,cancelled:false,restored:false,lost:false,awaitingLateExit:false,settleArmed:false};
+      intent=mode!=='none';lastOutcome='printing';hideRecovery();sync();
+    }
+    function afterPrint(reason='afterprint'){
+      if(!cycle||cycle.cancelled)return;
+      cycle.active=false;if(!cycle.returned)cycle.awaitingLateExit=true;cycle.returned=true;cycle.returnReason=reason;
+      if(cycle.mode==='none'){cycle.awaitingLateExit=false;lastOutcome='windowed-print-return';hideRecovery();return;}
+      if(cycle.mode==='native'&&!native()||cycle.mode==='focus'&&!focused())cycle.lost=true;
+      maybeRestore();
+    }
+    function cancelPrint(){
+      clearTimeout(settleTimer);if(cycle){cycle.cancelled=true;cycle.active=false;cycle.awaitingLateExit=false;}lastOutcome='print-not-opened';hideRecovery();sync();
+    }
+    function gestureRestore(event){
+      if(!event.isTrusted||!recoverable()||restoring)return;
+      const current=cycle;
+      if(native()||current.mode==='focus'&&focused()){restored(current);return;}
+      current.active=false;current.returned=true;current.returnReason='explicit-gesture';
+      requestRestore(current,false);
+    }
+    returnButton.addEventListener('click',gestureRestore);
+    $('#ap-restart').addEventListener('click',gestureRestore,true);
+    button.addEventListener('click',async()=>{
+      if(native()){cancelIntent();try{await document.exitFullscreen();}catch{notice.textContent='전체 화면을 종료하지 못했어요. 브라우저의 종료 기능을 이용해 주세요.';notice.hidden=false;}sync();return;}
+      if(focused()){cancelIntent();stopFocus();return;}
+      if(restoring)return;
+      intent=true;cycle=null;hideRecovery();
+      try{if(!document.fullscreenEnabled||typeof root.requestFullscreen!=='function')throw new Error('unavailable');await root.requestFullscreen();if(native()){notice.hidden=true;lastOutcome='entered';}else throw new Error('not entered');}
+      catch{applyFocus();lastOutcome='focus-fallback';}
       sync();
-    };
-    document.addEventListener('fullscreenchange',sync);document.addEventListener('keydown',e=>{if(e.key==='Escape'&&focusMode&&!root.querySelector('dialog[open]')){e.preventDefault();stopFocus();button.focus();}});
+    });
+    document.addEventListener('fullscreenchange',()=>{
+      if(native()){
+        if(cycle&&cycle.returned&&!cycle.cancelled)restored(cycle);
+        sync();return;
+      }
+      if(cycle&&!cycle.cancelled&&intent&&cycle.mode==='native'&&(cycle.active||cycle.lost||cycle.returned&&cycle.awaitingLateExit)){
+        cycle.lost=true;cycle.restored=false;if(cycle.returned)maybeRestore();
+      }
+      else if(intent&&!focused())cancelIntent();
+      sync();
+    });
+    document.addEventListener('keydown',event=>{
+      if(event.key!=='Escape'||root.querySelector('dialog[open]')||!available())return;
+      if(native()||focused()||recoverable()){
+        cancelIntent();if(focused()){event.preventDefault();stopFocus();button.focus();}
+      }
+    });
+    // A late UA fullscreenchange may follow afterprint. This event phase ends at
+    // genuine app interaction or 400ms after actual focus/visibility return.
+    for(const name of ['pointerdown','keydown'])root.addEventListener(name,event=>{
+      if(event.isTrusted&&cycle?.returned){cycle.awaitingLateExit=false;clearTimeout(settleTimer);}
+    },true);
+    window.addEventListener('blur',()=>{if(cycle?.active)cycle.blurSeen=true;});
+    window.addEventListener('focus',()=>{
+      if(cycle?.active&&(cycle.blurSeen||cycle.awaySeen))afterPrint('focus-return');else maybeRestore();
+    });
+    document.addEventListener('visibilitychange',()=>{
+      if(document.visibilityState==='hidden'){if(cycle?.active)cycle.awaySeen=true;return;}
+      if(cycle?.active&&cycle.awaySeen&&document.hasFocus())afterPrint('visible-focus-return');else maybeRestore();
+    });
+    globalThis.AIDiveFullscreen=Object.freeze({beforePrint,afterPrint,cancelPrint,getState:()=>({mode:native()?'native':focused()?'focus':'windowed',intent,restoring,lastOutcome,cycle:cycle?{...cycle}:null})});
+    sync();
   }
 
   // Integrated pixel frame and character use integer nearest-neighbor scale.
@@ -1974,6 +2095,14 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 <style data-ai-dive-refresh>
 /* AI.D.I.V.E. local refresh. Artwork stays pixel-sharp; UI text stays native-resolution. */
+#aibti-prototype .ai-fullscreen-recovery { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px 12px; padding:8px 10px; border:1px solid #c7b7dc; background:#f1eafa; color:#59466e; font:14px/1.5 "AI Dive Jua",sans-serif; }
+#aibti-prototype .ai-fullscreen-recovery span { flex:1 1 220px; }
+#aibti-prototype .ai-fullscreen-recovery button { flex:0 1 auto; min-height:40px; padding:7px 12px; font:14px/1.4 "AI Dive Jua",sans-serif; }
+@media (min-width:760px) and (min-height:600px) {
+  #aibti-prototype.retro-club.ap-tablet-app .ap-shell:has(#ai-fullscreen-recovery:not([hidden])) #ap-result .sk-canvas-wrap {
+    width:min(100%,360px,calc((100dvh - 358px) * 11 / 17));
+  }
+}
 #aibti-prototype.retro-club.ap-tablet-app {
   --ai-font: "AI Dive Jua", "Jua", "Malgun Gothic", sans-serif;
   padding: 12px;
@@ -2567,11 +2696,12 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     if(busy||!ready()||performance.now()-last<1000)return;
     status.textContent='';
     if(typeof window.print!=='function'){status.textContent='인쇄창을 열 수 없습니다. Chrome의 인쇄 메뉴를 이용해 주세요.';return;}
-    try{if(!capture())return;last=performance.now();busy=true;sync();window.print();}
-    catch{status.textContent='인쇄창을 열지 못했습니다. Chrome의 인쇄 메뉴를 이용해 주세요.';}
+    try{if(!capture())return;last=performance.now();busy=true;sync();globalThis.AIDiveFullscreen?.beforePrint();window.print();}
+    catch{globalThis.AIDiveFullscreen?.cancelPrint();status.textContent='인쇄창을 열지 못했습니다. Chrome의 인쇄 메뉴를 이용해 주세요.';}
     finally{timer=setTimeout(release,1000);}
   });
-  window.addEventListener('beforeprint',()=>{if(!busy)capture();});window.addEventListener('afterprint',release);
+  window.addEventListener('beforeprint',()=>{if(!busy)capture();globalThis.AIDiveFullscreen?.beforePrint();});
+  window.addEventListener('afterprint',()=>{release();globalThis.AIDiveFullscreen?.afterPrint('afterprint');});
   new MutationObserver(()=>{if(!busy&&!ready())document.body.classList.remove('selphy-print-ready');sync();}).observe(save,{attributes:true,attributeFilter:['disabled']});
   new MutationObserver(()=>{if(result.hidden)document.body.classList.remove('selphy-print-ready');sync();}).observe(result,{attributes:true,attributeFilter:['hidden']});
   sync();
